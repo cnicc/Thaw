@@ -128,8 +128,11 @@ public final class MenuOpenMonitor {
             else {
                 return nil
             }
-            let menuBarHeight = screen.frame.maxY - screen.visibleFrame.maxY
-            guard menuBarHeight > 0 else { return nil }
+            // Without separate Spaces only the first screen has a bar.
+            let hasMenuBar = NSScreen.screensHaveSeparateSpaces || screen == NSScreen.screens.first
+            let reserved = screen.frame.maxY - screen.visibleFrame.maxY
+            let strip = menuBarStripHeight(reserved: reserved, safeAreaTop: screen.safeAreaInsets.top, statusBarThickness: NSStatusBar.system.thickness, hasMenuBar: hasMenuBar)
+            guard let menuBarHeight = strip else { return nil }
             let displayFrame = CGDisplayBounds(CGDirectDisplayID(number.uint32Value))
             return CGRect(
                 x: displayFrame.minX,
@@ -138,6 +141,22 @@ public final class MenuOpenMonitor {
                 height: menuBarHeight
             )
         }
+    }
+
+    /// The height of a screen's menu bar strip, or nil when the screen has no bar. An auto-hiding
+    /// bar reserves no room, yet its menus still hang below it; the notch or the status bar thickness
+    /// plus the slack covers the bar, 30 pt on macOS 27, so the bar's own window stays out.
+    static nonisolated func menuBarStripHeight(
+        reserved: CGFloat,
+        safeAreaTop: CGFloat,
+        statusBarThickness: CGFloat,
+        hasMenuBar: Bool
+    ) -> CGFloat? {
+        if reserved > 0 {
+            return reserved
+        }
+        guard hasMenuBar else { return nil }
+        return max(safeAreaTop, statusBarThickness) + menuBarAttachmentSlack
     }
 
     /// Menus hang from the bar's bottom edge within attachment slack; desktop popups such as DockDoor previews do not count.
