@@ -42,12 +42,16 @@ public final class MenuOpenMonitor {
     /// The first probe seeds the baseline rather than treating every existing candidate as new.
     private var hasBaseline = false
 
-    public convenience init(onScreenItems: @escaping @MainActor () -> [MenuBarItem]) {
+    /// measuredBarHeight reads a display's bar window height; it covers a bar that reserves no room.
+    public convenience init(
+        onScreenItems: @escaping @MainActor () -> [MenuBarItem],
+        measuredBarHeight: @escaping @MainActor (CGDirectDisplayID) -> CGFloat?
+    ) {
         self.init(
             onScreenItems: onScreenItems,
             cacheFreshness: .milliseconds(250),
             windowSnapshot: { await Self.readOnScreenWindows() },
-            menuBarStrips: { Self.liveMenuBarStrips() }
+            menuBarStrips: { Self.liveMenuBarStrips(measuredBarHeight: measuredBarHeight) }
         )
     }
 
@@ -121,7 +125,7 @@ public final class MenuOpenMonitor {
 
     /// NSScreen's full-minus-visible height gives the bar strip; CGDisplayBounds anchors it in top-left window-server coordinates.
     @MainActor
-    private static func liveMenuBarStrips() -> [CGRect] {
+    private static func liveMenuBarStrips(measuredBarHeight: (CGDirectDisplayID) -> CGFloat?) -> [CGRect] {
         NSScreen.screens.compactMap { screen in
             guard
                 let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
@@ -130,10 +134,13 @@ public final class MenuOpenMonitor {
             }
             // Without separate Spaces only the first screen has a bar.
             let hasMenuBar = NSScreen.screensHaveSeparateSpaces || screen == NSScreen.screens.first
+            let displayID = CGDirectDisplayID(number.uint32Value)
             let reserved = screen.frame.maxY - screen.visibleFrame.maxY
-            let strip = menuBarStripHeight(reserved: reserved, safeAreaTop: screen.safeAreaInsets.top, statusBarThickness: NSStatusBar.system.thickness, hasMenuBar: hasMenuBar)
-            guard let menuBarHeight = strip else { return nil }
-            let displayFrame = CGDisplayBounds(CGDirectDisplayID(number.uint32Value))
+            let measured = reserved > 0 || !hasMenuBar ? nil : measuredBarHeight(displayID)
+            guard let menuBarHeight = menuBarStripHeight(reserved: reserved, measured: measured, hasMenuBar: hasMenuBar) else {
+                return nil
+            }
+            let displayFrame = CGDisplayBounds(displayID)
             return CGRect(
                 x: displayFrame.minX,
                 y: displayFrame.minY,
@@ -143,20 +150,15 @@ public final class MenuOpenMonitor {
         }
     }
 
-    /// The height of a screen's menu bar strip, or nil when the screen has no bar. An auto-hiding
-    /// bar reserves no room, yet its menus still hang below it; the notch or the status bar thickness
-    /// plus the slack covers the bar, 30 pt on macOS 27, so the bar's own window stays out.
-    static nonisolated func menuBarStripHeight(
-        reserved: CGFloat,
-        safeAreaTop: CGFloat,
-        statusBarThickness: CGFloat,
-        hasMenuBar: Bool
-    ) -> CGFloat? {
+    /// The height of a screen's menu bar strip, or nil when the screen has no bar. An auto-hiding bar
+    /// reserves no room, yet its menus still hang below it, so it takes the height measured from the
+    /// bar window; with no measurement there is no strip rather than a guess.
+    static nonisolated func menuBarStripHeight(reserved: CGFloat, measured: CGFloat?, hasMenuBar: Bool) -> CGFloat? {
         if reserved > 0 {
             return reserved
         }
-        guard hasMenuBar else { return nil }
-        return max(safeAreaTop, statusBarThickness) + menuBarAttachmentSlack
+        guard hasMenuBar, let measured, measured > 0 else { return nil }
+        return measured
     }
 
     /// Menus hang from the bar's bottom edge within attachment slack; desktop popups such as DockDoor previews do not count.
